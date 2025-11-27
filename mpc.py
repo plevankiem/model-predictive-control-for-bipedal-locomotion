@@ -1,170 +1,235 @@
-from model import LIPMModel
-from config import MPCConfig
+from config import MPCConfig, CoPGeneratorConfig
 import numpy as np
-from typing import Tuple
+import cvxpy as cp
+from typing import Any, Tuple
 from pynamoid import generate_footsteps
+from enum import Enum
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 
-footsteps = generate_footsteps(
-    distance=2.1,
-    step_length=0.3,
-    foot_spread=0.1,
-)
-T = 16 * 0.01
-dt = 0.01
+enum = Enum('State', ['STANDING', 'DOUBLE_SUPPORT', 'SINGLE_SUPPORT'])
 
+class CoPGenerator:
+    """
+    The role of this class is to generate a viable cop trajectory, to be provided to the ZMPController.
+    """
+    def __init__(self, config: CoPGeneratorConfig):
+        self.ssp_duration = config.ssp_duration
+        self.dsp_duration = config.dsp_duration
+        self.standing_duration = config.standing_duration
+        self.dt = config.dt
+        self.distance = config.distance
+        self.step_length = config.step_length
+        self.foot_spread = config.foot_spread
+    
+    def generate_cop_trajectory(self):
+        footsteps = generate_footsteps(
+            distance=self.distance,
+            step_length=self.step_length,
+            foot_spread=self.foot_spread,
+        )
+        fig, ax = plt.subplots()
+        for contact in footsteps:
+            x, y = contact.x, contact.y
+            w, h = contact.shape
+            rect = plt.Rectangle((x - w/2, y - h/2), w, h, edgecolor='b', facecolor='none')
+            ax.add_patch(rect)
+        X = [contact.x for contact in footsteps]
+        Y = [contact.y for contact in footsteps]
+        ax.scatter(X, Y, color='r', s=0.2)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_title("Footsteps (rectangles centered on contacts)")
+        ax.set_aspect('equal')
+        plt.savefig('results/footsteps.png')
+        plt.close(fig)
 
-class WalkingFSM:
-    def _init_(self, ssp_duration, dsp_duration):
-        self.ssp_duration = ssp_duration
-        self.dsp_duration = dsp_duration
-        self.state = 'Standing'
-        self.next_footstep = 2
-        self.mcp_timestep = 0.01
+        curr_footstep = 1
+        state = enum.STANDING
+        t = 0.
+        next_state_change = self.standing_duration
+        z_max, z_min = [], []
+        while curr_footstep < len(footsteps):
+            if t > next_state_change:
+                if state == enum.STANDING and curr_footstep == len(footsteps) - 1:
+                    curr_footstep += 1
+                elif state == enum.STANDING:
+                    state = enum.DOUBLE_SUPPORT
+                    next_state_change += self.dsp_duration
+                elif state == enum.SINGLE_SUPPORT and curr_footstep + 1 == len(footsteps) - 1:
+                    state = enum.DOUBLE_SUPPORT
+                    next_state_change += self.dsp_duration
+                    curr_footstep += 1
+                elif state == enum.SINGLE_SUPPORT:
+                    state = enum.DOUBLE_SUPPORT
+                    next_state_change += self.dsp_duration
+                    curr_footstep += 1
+                elif state == enum.DOUBLE_SUPPORT and curr_footstep == len(footsteps) - 1:
+                    state = enum.STANDING
+                    next_state_change += self.standing_duration
+                elif state == enum.DOUBLE_SUPPORT:
+                    state = enum.SINGLE_SUPPORT
+                    next_state_change += self.ssp_duration
+                else:
+                    raise ValueError(f"Invalid state: {state}")
 
-        self.start_standing()
-
-    def tick(self, dt):
-        if self.state == 'Standing':
-            self.run_standing()
-        elif self.state == 'DoubleSupport':
-            self.run_double_support()
-        elif self.state == 'SingleSupport':
-            self.run_single_support()
+            if curr_footstep < len(footsteps):
+                if state == enum.STANDING or state == enum.DOUBLE_SUPPORT:
+                    footstep0, footstep1 = footsteps[curr_footstep-1], footsteps[curr_footstep]
+                    z_max.append([max(footstep0.z_max[0], footstep1.z_max[0]), max(footstep0.z_max[1], footstep1.z_max[1])])
+                    z_min.append([min(footstep0.z_min[0], footstep1.z_min[0]), min(footstep0.z_min[1], footstep1.z_min[1])])
+                else:
+                    z_max.append([footsteps[curr_footstep].z_max[0], footsteps[curr_footstep].z_max[1]])
+                    z_min.append([footsteps[curr_footstep].z_min[0], footsteps[curr_footstep].z_min[1]])
             
-    def start_standing(self):
-        self.start_walking = False
-        self.state = "Standing"
-        return self.run_standing()
+            t += self.dt
 
-    def run_standing(self):
-        if self.start_walking:
-            self.start_walking = False
-            if self.next_footstep < len(footsteps):
-                return self.start_double_support()
-            
-    def start_double_support(self):
-        if self.next_footstep % 2 == 1:  # left foot swings
-            self.stance_foot = "right_foot" #TODO check if stance.right_foot is defined and how to replace it for pinnochio # Stance is the inverse kinematics !!
-        else:  # right foot swings
-            self.stance_foot = "left_foot"
-        dsp_duration = self.dsp_duration
-        if self.next_footstep == 2 or self.next_footstep == len(footsteps) - 1:
-            # double support is a bit longer for the first and last steps
-            dsp_duration = 4 * self.dsp_duration
-        self.swing_target = footsteps[self.next_footstep]
-        self.rem_time = dsp_duration
-        self.state = "DoubleSupport"
-        self.start_com_mpc_dsp()
-        return self.run_double_support()
+        return np.array(z_max), np.array(z_min)
 
-    def run_double_support(self):
-        if self.rem_time <= 0.:
-            return self.start_single_support()
-        self.run_com_mpc()
-        self.rem_time -= dt
+class ZMPController:
+    def __init__(self, config: MPCConfig):
+        T = config.dt
+        self.config = config
+        self.A = np.array([[1., T, T ** 2 / 2.], [0., 1., T], [0., 0., 1.]])
+        self.B = np.array([T ** 3 / 6., T ** 2 / 2., T]).reshape((3, 1))
+        self.C = np.array([1., 0., -self.config.h / self.config.g])
 
-    def start_single_support(self):
-        if self.next_footstep % 2 == 1:  # left foot swings
-            self.swing_foot = 'left_foot'
-        else:  # right foot swings
-            self.swing_foot = 'right_foot'
-        self.next_footstep += 1
-        self.rem_time = self.ssp_duration
-        self.state = "SingleSupport"
-        self.start_swing_foot()
-        self.start_com_mpc_ssp()
-        self.run_single_support()
+    def generate_com_trajectory(self, x_init, y_init, z_max, z_min):
+        """
+        Generate the com trajectory using the linear predictive control.
+        Args:
+            x_init: The initial x state of the system.
+            y_init: The initial y state of the system.
+            e: The error of the system. e = Z_ref, which should be provided by the user.
 
-    def run_single_support(self):
-        if self.rem_time <= 0.:
-            if self.next_footstep < len(footsteps):
-                return self.start_double_support()
-            else:  # footstep sequence is over
-                return self.start_standing()
-        self.run_swing_foot()
-        self.run_com_mpc()
-        self.rem_time -= dt
+        Returns:
+            The com trajectory.
+        """
+        x_hist, y_hist = [], []
+        x_hist.append(x_init)
+        y_hist.append(y_init)
 
-    def start_swing_foot(self):
-        self.swing_start = self.swing_foot.pose
+        n_steps = len(z_min)
+        
+        z_max_extended = np.vstack([
+            z_max,
+            np.tile(z_max[-1:, :], (self.config.horizon, 1))
+        ])
+        z_min_extended = np.vstack([
+            z_min,
+            np.tile(z_min[-1:, :], (self.config.horizon, 1))
+        ])
+        
+        for i in tqdm(range(n_steps-1)):
+            preview_n_steps = self.config.horizon
+            x_hist.append(self.predict(x_hist[-1], preview_n_steps, z_max_extended[i+1:i+1+preview_n_steps, 0:1], z_min_extended[i+1:i+1+preview_n_steps, 0:1]))
+            y_hist.append(self.predict(y_hist[-1], preview_n_steps, z_max_extended[i+1:i+1+preview_n_steps, 1:2], z_min_extended[i+1:i+1+preview_n_steps, 1:2]))
+        return np.array([[x[0, 0], y[0, 0]] for x, y in zip(x_hist, y_hist)]), np.array(y_hist)
 
-    def start_com_mpc_dsp(self):
-        self.update_mpc(self.rem_time, self.ssp_duration)
+    def predict(self, x_init, nb_steps, z_max, z_min):
+        """
+        Predict the next state of the system using the linear predictive control.
+        Args:
+            x_init: The initial state of the system.
+            z_max, z_min: Should of shape (n_steps, 1)
 
-    def start_com_mpc_ssp(self):
-        self.update_mpc(0., self.rem_time)
-
-    def run_com_mpc(self):
-            if self.preview_time >= self.mpc_timestep:
-                if self.state == "DoubleSupport":
-                    self.update_mpc(self.rem_time, self.ssp_duration)
-                else:  # self.state == "SingleSupport":
-                    self.update_mpc(0., self.rem_time)
-            com_jerk = np.array([self.x_mpc.U[0][0], self.y_mpc.U[0][0], 0.]) #TODO update here 
-            #stance.com.integrate_constant_jerk(com_jerk, dt) # Integrate CoM with the computed jerk
-            self.preview_time += dt
-
-    def run_swing_foot(self):
-        progress = min(1., max(0., 1. - self.rem_time / self.ssp_duration))
-        new_pose = pin.interpolate(model, self.swing_start, self.swing_target.pose, progress)
-        self.swing_foot.set_pose(new_pose)
-
-    #TODO change the implementation of generate_footsteps to use the paper !
-    def update_mpc(self, dsp_duration, ssp_duration):
-        nb_preview_steps = 16
-        T = self.mpc_timestep
-        nb_init_dsp_steps = int(round(self.dsp_duration / T))
-        nb_init_ssp_steps = int(round(self.ssp_duration / T))
-        nb_dsp_steps = int(round(self.dsp_duration / T))
-        A = np.array([[1., T, T ** 2 / 2.], [0., 1., T], [0., 0., 1.]])
-        B = np.array([T * 3 / 6., T * 2 / 2., T]).reshape((3, 1))
-        h = 0.75
-        g = 9.81
-        zmp_from_state = np.array([1., 0., -h / g])
-        C = np.array([+zmp_from_state, -zmp_from_state])
-        D = None
-        e = [[], []]
-        cur_vertices = self.stance_foot.get_scaled_contact_area(0.8)
-        next_vertices = self.swing_target.get_scaled_contact_area(0.8)
-        for coord in [0, 1]:
-            cur_max = max(v[coord] for v in cur_vertices)
-            cur_min = min(v[coord] for v in cur_vertices)
-            next_max = max(v[coord] for v in next_vertices)
-            next_min = min(v[coord] for v in next_vertices)
-            e[coord] = [
-                np.array([+1000., +1000.]) if i < nb_init_dsp_steps else
-                np.array([+cur_max, -cur_min]) if i - nb_init_dsp_steps <= nb_init_ssp_steps else
-                np.array([+1000., +1000.]) if i - nb_init_dsp_steps - nb_init_ssp_steps < nb_dsp_steps else
-                np.array([+next_max, -next_min])
-                for i in range(nb_preview_steps)]
-        x_mpc = LinearPredictiveControl(
-            A, B, C, D, e[0],
-            x_init=np.array([self.x_hist[-1]]),
-            x_goal=np.array([self.swing_target.x, 0., 0.]),
-            nb_steps=nb_preview_steps,
-            wxt=1., wu=0.01)
-        y_mpc = LinearPredictiveControl(
-            A, B, C, D, e[1],
-            x_init=np.array([self.y_hist[-1]]),
-            x_goal=np.ALLOW_THREADSarray([self.swing_target.y, 0., 0.]),
-            nb_steps=nb_preview_steps,
-            wxt=1., wu=0.01)
-        self.x_hist.append(x_mpc)
-        self.y_hist.append(y_mpc)
-        self.preview_time = 0.
-
-def LinearPredictiveControl(A, B, C, D, e, x_init, x_goal, nb_steps, wxt, wu):
-
+        Returns:
+            The predicted state of the system.
+        """
         Px = np.zeros((nb_steps, 3))
         Pu = np.zeros((nb_steps, nb_steps))
+        T = self.config.dt
 
         for i in range(nb_steps):
             Px[i, 0] = 1
             Px[i, 1] = T * (i + 1)
-            Px[i, 2] = (T * 2) / 2 * (i + 1) * 2 + C[0, 2]
+            Px[i, 2] = (T ** 2) / 2 * (i + 1) ** 2 - self.config.h / self.config.g
             for j in range(i + 1):
-                Pu[i, j] = (T * 3) / 6 * (i - j + 1) * 2 + T * C[0, 2]
+                Pu[i, j] = (T ** 3) / 6 * (1 + 3*(i-j) + 3*(i-j)**2) - T * self.config.h / self.config.g
+        
+        if self.config.strict:
+            H = self.config.R * np.eye(nb_steps)
+            A_ineq = np.concatenate([Pu, -Pu], axis=0)
+            # S'assurer que les dimensions sont cohérentes (tous en 1D)
+            Px_x_init = (Px @ x_init).flatten()
+            z_max_flat = z_max.flatten()
+            z_min_flat = z_min.flatten()
+            b_ineq = np.concatenate([z_max_flat - Px_x_init, -z_min_flat + Px_x_init], axis=0)
+            J = cp.Variable(nb_steps)
 
-        X_burst = - (Pu.T @ Pu + wu/wxt * np.eye(nb_steps)).inv() @ Pu.T  @ (Px @ x_init - e)
+            # Calculer z_ref et z_pred pour le tracking
+            z_ref = (z_max_flat + z_min_flat) / 2
+            z_pred = Px_x_init + Pu @ J  # ZMP prédit
+            
+            # Fonction objectif avec tracking vers z_ref et régularisation
+            objective = 0.5 * self.config.Q * cp.sum_squares(z_pred - z_ref) + 0.5 * cp.quad_form(J, H)
+            constraints = [A_ineq @ J <= b_ineq]
+            prob = cp.Problem(cp.Minimize(objective), constraints)
+            prob.solve(solver=cp.OSQP, warm_start=True)
 
-        return A @ x_init + B @ X_burst[0]
+            if J.value is None:
+                raise RuntimeError("Le solveur QP n'a pas trouvé de solution (infeasible ou autre).")
+            X_burst = np.expand_dims(np.array(J.value), axis=1)
+        else:
+            z_ref = (z_max + z_min) / 2
+            X_burst = - np.linalg.inv(Pu.T @ Pu + self.config.R/self.config.Q * np.eye(nb_steps)) @ Pu.T  @ (Px @ x_init - z_ref)
+        result = self.A @ x_init + self.B @ X_burst[0:1, :]
+
+        return result
+
+def main():
+    config = CoPGeneratorConfig()
+    cop_generator = CoPGenerator(config)
+    z_max, z_min = cop_generator.generate_cop_trajectory()
+    t = np.arange(z_max.shape[0]) * config.dt
+
+    zmp_config = MPCConfig()
+    controller = ZMPController(zmp_config)
+    com_trajectory, y_hist = controller.generate_com_trajectory(np.array([[0., 0., 0.]]).T, np.array([[0., 0., 0.]]).T, z_max, z_min)
+    C_dot_y_hist = np.tensordot(y_hist[:, :, 0], controller.C, axes=([1], [0]))
+
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=t, y=z_max[:, 1],
+        mode='lines',
+        name='z_max',
+        line=dict(color='red', dash='dash')
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=t, y=z_min[:, 1],
+        mode='lines',
+        name='z_min',
+        line=dict(color='blue', dash='dash')
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=t, y=C_dot_y_hist,
+        mode='lines',
+        name='Estimation de z',
+        line=dict(color='green', dash='dash')
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=t, y=com_trajectory[:, 1],
+        mode='lines',
+        name='com',
+        line=dict(color='black')
+    ))
+
+    fig.update_layout(
+        title="CoP Limits Over Time",
+        xaxis_title="Time (s)",
+        yaxis_title="Y Axis",
+        legend=dict(x=0, y=1),
+        template="plotly_white"
+    )
+
+    fig.show()
+
+
+if __name__ == "__main__":
+    main()

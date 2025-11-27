@@ -1,14 +1,14 @@
-from dataclasses import dataclass
-import numpy as np
 import matplotlib.pyplot as plt
 from typing import Tuple
 
-@dataclass
 class Contact:
-    x: float
-    y: float
-    shape: Tuple[float, float]
-    friction: float
+    def __init__(self, x: float, y: float, shape: Tuple[float, float], friction: float):
+        self.x = x
+        self.y = y
+        self.shape = shape
+        self.friction = friction
+        self.z_max = [x + shape[0] / 2, y + shape[1] / 2]
+        self.z_min = [x - shape[0] / 2, y - shape[1] / 2]
 
 def generate_footsteps(distance, step_length, foot_spread):
     contacts = []
@@ -16,9 +16,9 @@ def generate_footsteps(distance, step_length, foot_spread):
     def append_contact(x, y):
         contact = Contact(x, y, (0.11, 0.05), 0.7)
         contacts.append(contact)
-
-    append_contact(0., +foot_spread)
+        
     append_contact(0., -foot_spread)
+    append_contact(0., +foot_spread)
     x = 0.
     y = foot_spread
     while x < distance:
