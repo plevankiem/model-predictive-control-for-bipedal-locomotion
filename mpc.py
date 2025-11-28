@@ -188,6 +188,7 @@ def main():
     controller = ZMPController(zmp_config)
     com_trajectory, y_hist = controller.generate_com_trajectory(np.array([[0., 0., 0.]]).T, np.array([[0., 0., 0.]]).T, z_max, z_min)
     C_dot_y_hist = np.tensordot(y_hist[:, :, 0], controller.C, axes=([1], [0]))
+    print(com_trajectory.shape)
 
 
     fig = go.Figure()
@@ -229,6 +230,16 @@ def main():
     )
 
     fig.show()
+    
+    # Visualisation 3D de la trajectoire du COM
+    # Décommenter les lignes suivantes pour activer la visualisation 3D
+    from visualize import visualize_com_trajectory_3d, visualize_com_trajectory_static
+    
+    # Version avec animation (sphère qui suit la trajectoire)
+    visualize_com_trajectory_3d(com_trajectory, show_sphere=True, save_animation=False)
+    
+    # Version statique avec gradient de couleur (alternative)
+    # visualize_com_trajectory_static(com_trajectory)
 
 
 if __name__ == "__main__":
