@@ -260,5 +260,5 @@ Pour contribuer au projet :
 
 ## 👤 Auteur
 
-[Votre nom]
+Paul Le Van Kiem
 
