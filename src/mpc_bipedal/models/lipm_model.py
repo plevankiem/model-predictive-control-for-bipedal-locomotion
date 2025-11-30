@@ -1,8 +1,12 @@
-from config import ModelConfig
+"""Linear Inverted Pendulum Model (LIPM) for bipedal locomotion."""
+
 import numpy as np
 from typing import Tuple
+from ..config import ModelConfig
+
 
 class LIPMModel:
+    """Linear Inverted Pendulum Model implementation."""
 
     def __init__(self, config: ModelConfig):
         self.config = config
@@ -22,10 +26,14 @@ class LIPMModel:
         self.C = np.array([[1.0, 0.0, -self.h / self.g]])
 
     def step(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """Compute next state given current state and control input."""
         return self.A @ x + self.B @ u
 
     def get_zmp(self, x: np.ndarray) -> float:
+        """Compute Zero Moment Point (ZMP) from state."""
         return self.C @ x
     
     def get_state_dimension(self) -> int:
-        return self.A.shape[1]    
+        """Return the dimension of the state vector."""
+        return self.A.shape[1]
+

@@ -1,0 +1,23 @@
+{
+    "cop_generator": {
+        "ssp_duration": 0.2,
+        "dsp_duration": 0.02,
+        "standing_duration": 0.5,
+        "dt": 0.01,
+        "distance": 3.0,
+        "step_length": 0.4,
+        "foot_spread": 0.12
+    },
+    "mpc": {
+        "horizon": 200,
+        "Q": 1.0,
+        "R": 1e-6,
+        "dt": 0.01,
+        "h": 0.75,
+        "g": 9.81,
+        "m": 40.0,
+        "F_ext": 400.0,
+        "strict": true
+    }
+}
+

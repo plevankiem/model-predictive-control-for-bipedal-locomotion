@@ -1,7 +1,12 @@
+"""Footstep generation for bipedal locomotion."""
+
+from typing import Tuple, List
 import matplotlib.pyplot as plt
-from typing import Tuple
+
 
 class Contact:
+    """Represents a contact point for a footstep."""
+    
     def __init__(self, x: float, y: float, shape: Tuple[float, float], friction: float):
         self.x = x
         self.y = y
@@ -10,7 +15,19 @@ class Contact:
         self.z_max = [x + shape[0] / 2, y + shape[1] / 2]
         self.z_min = [x - shape[0] / 2, y - shape[1] / 2]
 
-def generate_footsteps(distance, step_length, foot_spread):
+
+def generate_footsteps(distance: float, step_length: float, foot_spread: float) -> List[Contact]:
+    """
+    Generate a sequence of footsteps for bipedal locomotion.
+    
+    Args:
+        distance: Total distance to travel
+        step_length: Length of each step
+        foot_spread: Lateral spacing between feet
+        
+    Returns:
+        List of Contact objects representing the footsteps
+    """
     contacts = []
 
     def append_contact(x, y):
@@ -30,6 +47,7 @@ def generate_footsteps(distance, step_length, foot_spread):
        append_contact(x, y)
     append_contact(x, -y)
     return contacts
+
 
 if __name__ == "__main__":
     traj = generate_footsteps(
@@ -51,3 +69,4 @@ if __name__ == "__main__":
     ax.set_title("Footsteps (rectangles centered on contacts)")
     ax.set_aspect('equal')
     plt.show()
+

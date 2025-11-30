@@ -1,9 +1,11 @@
+"""Visualization utilities for the bipedal locomotion system."""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
-from config import MPCConfig
 import matplotlib.animation as animation
+from ..config import MPCConfig
 
 
 def visualize_com_trajectory_3d(com_trajectory_xy, h=None, show_sphere=True, save_animation=False, output_file='com_trajectory_3d.gif'):
@@ -257,12 +259,3 @@ def visualize_com_trajectory_static(com_trajectory_xy, h=None):
     
     return fig, ax
 
-
-if __name__ == "__main__":
-    # Exemple d'utilisation - nécessite d'exécuter d'abord mpc.py pour obtenir com_trajectory
-    print("Pour utiliser ce script:")
-    print("1. Soit l'importer dans mpc.py et appeler visualize_com_trajectory_3d(com_trajectory)")
-    print("2. Soit sauvegarder com_trajectory dans un fichier numpy et le charger ici")
-    print("\nExemple d'utilisation depuis mpc.py:")
-    print("  from visualize import visualize_com_trajectory_3d")
-    print("  visualize_com_trajectory_3d(com_trajectory, show_sphere=True)")
