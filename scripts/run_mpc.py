@@ -25,8 +25,26 @@ def load_config_from_json(config_file: str):
     with open(config_file, 'r') as f:
         config_dict = json.load(f)
     
-    cop_config = CoPGeneratorConfig(**config_dict.get('cop_generator', {}))
-    mpc_config = MPCConfig(**config_dict.get('mpc', {}))
+    cop_dict = config_dict.get('cop_generator', {}).copy()
+    # Remove dt from cop_generator dict - it will be synchronized from mpc_config
+    cop_dict.pop('dt', None)
+    cop_config = CoPGeneratorConfig(**cop_dict)
+    
+    mpc_dict = config_dict.get('mpc', {}).copy()
+    
+    # Handle dt: horizon takes precedence. If only dt is provided, recalculate horizon from it.
+    # dt will always be calculated from horizon in __post_init__, so we remove dt from dict.
+    if 'dt' in mpc_dict:
+        dt_value = mpc_dict.pop('dt')
+        if 'horizon' not in mpc_dict:
+            # Recalculate horizon from dt to maintain dt = 1.5 / horizon
+            mpc_dict['horizon'] = int(1.5 / dt_value)
+        # If both dt and horizon are provided, horizon takes precedence (dt will be recalculated)
+    
+    mpc_config = MPCConfig(**mpc_dict)
+    
+    # Synchronize cop_config.dt with mpc_config.dt (dt is calculated from horizon)
+    cop_config.dt = mpc_config.dt
     
     return cop_config, mpc_config
 
@@ -38,7 +56,6 @@ def create_default_config_file(output_file: str):
             "ssp_duration": 0.24,
             "dsp_duration": 0.03,
             "standing_duration": 1.0,
-            "dt": 0.01,
             "distance": 2.1,
             "step_length": 0.3,
             "foot_spread": 0.1
@@ -47,12 +64,12 @@ def create_default_config_file(output_file: str):
             "horizon": 150,
             "Q": 1.0,
             "R": 1e-6,
-            "dt": 0.01,
             "h": 0.75,
             "g": 9.81,
             "m": 40.0,
             "F_ext": 400.0,
-            "strict": True
+            "strict": True,
+            "add_force": True
         }
     }
     
@@ -105,6 +122,8 @@ Exemples d'utilisation:
     parser.add_argument('--F-ext', type=float, dest='F_ext', help='Force externe (N)')
     parser.add_argument('--strict', action='store_true', default=None, help='Utiliser les contraintes strictes')
     parser.add_argument('--no-strict', action='store_true', dest='no_strict', help='Ne pas utiliser les contraintes strictes')
+    parser.add_argument('--add-force', action='store_true', default=None, help='Ajouter la force externe au moment spécifié')
+    parser.add_argument('--no-add-force', action='store_true', dest='no_add_force', help='Ne pas ajouter la force externe')
     
     # Options d'exécution
     parser.add_argument('--no-visualization', action='store_true', help='Ne pas afficher les visualisations')
@@ -132,6 +151,9 @@ Exemples d'utilisation:
             cop_config = CoPGeneratorConfig()
             mpc_config = MPCConfig()
     
+    # Synchronize cop_config.dt with mpc_config.dt after loading
+    cop_config.dt = mpc_config.dt
+    
     # Appliquer les arguments de ligne de commande
     if args.distance is not None:
         cop_config.distance = args.distance
@@ -145,12 +167,21 @@ Exemples d'utilisation:
         cop_config.dsp_duration = args.dsp_duration
     if args.standing_duration is not None:
         cop_config.standing_duration = args.standing_duration
-    if args.dt is not None:
-        cop_config.dt = args.dt
-        mpc_config.dt = args.dt  # Synchroniser dt
-    
+    # Handle horizon and dt: horizon takes precedence if both are provided
     if args.horizon is not None:
         mpc_config.horizon = args.horizon
+        # Recalculate dt from horizon
+        mpc_config.dt = 1.5 / mpc_config.horizon
+    elif args.dt is not None:
+        # If only dt is provided via command line, recalculate horizon to maintain dt = 1.5 / horizon
+        mpc_config.horizon = int(1.5 / args.dt)
+        mpc_config.dt = 1.5 / mpc_config.horizon
+    else:
+        # Recalculate dt from horizon to ensure consistency
+        mpc_config.dt = 1.5 / mpc_config.horizon
+    
+    # Synchronize cop_config.dt with mpc_config.dt
+    cop_config.dt = mpc_config.dt
     if args.Q is not None:
         mpc_config.Q = args.Q
     if args.R is not None:
@@ -166,6 +197,11 @@ Exemples d'utilisation:
         mpc_config.strict = True
     elif args.no_strict:
         mpc_config.strict = False
+    # Gérer add_force/no-add-force : appliquer seulement si explicitement fourni
+    if args.add_force:
+        mpc_config.add_force = True
+    elif args.no_add_force:
+        mpc_config.add_force = False
     
     # Créer le répertoire de sortie
     os.makedirs(args.output_dir, exist_ok=True)
@@ -186,6 +222,7 @@ Exemples d'utilisation:
     print(f"  m: {mpc_config.m} kg")
     print(f"  F_ext: {mpc_config.F_ext} N")
     print(f"  Strict: {mpc_config.strict}")
+    print(f"  Add force: {mpc_config.add_force}")
     print("=" * 60)
     print()
     

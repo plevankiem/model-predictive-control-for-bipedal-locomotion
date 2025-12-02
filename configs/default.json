@@ -3,7 +3,6 @@
         "ssp_duration": 0.24,
         "dsp_duration": 0.03,
         "standing_duration": 1.0,
-        "dt": 0.01,
         "distance": 2.1,
         "step_length": 0.3,
         "foot_spread": 0.1
@@ -12,12 +11,12 @@
         "horizon": 150,
         "Q": 1.0,
         "R": 1e-6,
-        "dt": 0.01,
         "h": 0.75,
         "g": 9.81,
         "m": 40.0,
         "F_ext": 400.0,
-        "strict": true
+        "strict": true,
+        "add_force": true
     }
 }
 

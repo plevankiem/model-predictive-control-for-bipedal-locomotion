@@ -21,6 +21,8 @@ class CoPGenerator:
     """
     
     def __init__(self, config: CoPGeneratorConfig):
+        if config.dt is None:
+            raise ValueError("dt must be set in CoPGeneratorConfig (should be synchronized with MPCConfig.dt)")
         self.ssp_duration = config.ssp_duration
         self.dsp_duration = config.dsp_duration
         self.standing_duration = config.standing_duration

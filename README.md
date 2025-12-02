@@ -64,6 +64,10 @@ python scripts/run_mpc.py --horizon 200 --Q 2.0 --R 1e-5
 
 # Modifier les paramètres physiques
 python scripts/run_mpc.py --h 0.80 --m 50.0 --F-ext 500.0
+
+# Contrôler l'application de la force externe
+python scripts/run_mpc.py --add-force  # Appliquer la force externe
+python scripts/run_mpc.py --no-add-force  # Ne pas appliquer la force externe
 ```
 
 ### Options disponibles
@@ -75,10 +79,10 @@ python scripts/run_mpc.py --h 0.80 --m 50.0 --F-ext 500.0
 - `--ssp-duration`: Durée phase simple support (s)
 - `--dsp-duration`: Durée phase double support (s)
 - `--standing-duration`: Durée phase debout (s)
-- `--dt`: Pas de temps (s)
+- `--dt`: Pas de temps (s) - si fourni, recalcule l'horizon pour maintenir dt = 1.5 / horizon
 
 #### Paramètres MPC
-- `--horizon`: Horizon de prédiction
+- `--horizon`: Horizon de prédiction (dt sera calculé comme 1.5 / horizon)
 - `--Q`: Poids du tracking
 - `--R`: Poids de la régularisation
 - `--h`: Hauteur du COM (m)
@@ -86,6 +90,8 @@ python scripts/run_mpc.py --h 0.80 --m 50.0 --F-ext 500.0
 - `--F-ext`: Force externe (N)
 - `--strict`: Utiliser les contraintes strictes
 - `--no-strict`: Ne pas utiliser les contraintes strictes
+- `--add-force`: Ajouter la force externe au moment spécifié
+- `--no-add-force`: Ne pas ajouter la force externe
 
 #### Options d'affichage
 - `--no-visualization`: Ne pas afficher les visualisations
@@ -147,7 +153,6 @@ Les fichiers de configuration sont au format JSON :
         "ssp_duration": 0.24,
         "dsp_duration": 0.03,
         "standing_duration": 1.0,
-        "dt": 0.01,
         "distance": 2.1,
         "step_length": 0.3,
         "foot_spread": 0.1
@@ -156,15 +161,17 @@ Les fichiers de configuration sont au format JSON :
         "horizon": 150,
         "Q": 1.0,
         "R": 1e-6,
-        "dt": 0.01,
         "h": 0.75,
         "g": 9.81,
         "m": 40.0,
         "F_ext": 400.0,
-        "strict": true
+        "strict": true,
+        "add_force": true
     }
 }
 ```
+
+**Note importante** : Le paramètre `dt` (pas de temps) est automatiquement calculé à partir de `horizon` selon la relation `dt = 1.5 / horizon`. Il n'est donc pas nécessaire (et non recommandé) de le spécifier dans le fichier de configuration. Si vous fournissez `dt` via la ligne de commande, l'horizon sera recalculé pour maintenir cette relation.
 
 ### Paramètres importants
 
@@ -172,19 +179,20 @@ Les fichiers de configuration sont au format JSON :
 - **distance**: Distance totale que le robot doit parcourir (m)
 - **step_length**: Longueur moyenne de chaque pas (m)
 - **foot_spread**: Distance latérale entre les pieds (m)
-- **dt**: Pas de temps pour la simulation (s)
+- **dt**: Pas de temps pour la simulation (s) - **calculé automatiquement** à partir de `horizon` selon `dt = 1.5 / horizon`
 - **ssp_duration**: Durée de la phase de simple support (s)
 - **dsp_duration**: Durée de la phase de double support (s)
 - **standing_duration**: Durée de la phase debout initiale (s)
 
 #### MPC
-- **horizon**: Nombre de pas de temps dans l'horizon de prédiction
+- **horizon**: Nombre de pas de temps dans l'horizon de prédiction. Le `dt` est calculé comme `dt = 1.5 / horizon`
 - **Q**: Poids du terme de tracking (erreur par rapport à la référence ZMP)
 - **R**: Poids du terme de régularisation (pénalise les grandes accélérations)
 - **h**: Hauteur du centre de masse (COM) (m)
 - **m**: Masse du robot (kg)
-- **F_ext**: Force externe appliquée à mi-parcours (N)
+- **F_ext**: Force externe à appliquer (N) - utilisée uniquement si `add_force` est `true`
 - **strict**: Utiliser les contraintes strictes (QP) ou solution analytique
+- **add_force**: Si `true`, applique la force externe `F_ext` à mi-parcours (quand `i == force_time`). Si `false`, aucune force externe n'est appliquée
 
 ## 📊 Exemples
 
@@ -253,6 +261,8 @@ Pour contribuer au projet :
 - Le solveur QP utilise `cvxpy` avec le solveur `OSQP`
 - Les visualisations utilisent `plotly` et `matplotlib`
 - La simulation peut prendre quelques secondes selon l'horizon et le nombre de pas
+- **Relation dt/horizon** : Le pas de temps `dt` est automatiquement calculé à partir de l'horizon selon `dt = 1.5 / horizon`. Cette relation garantit la cohérence entre les deux paramètres. Si vous spécifiez `dt` via la ligne de commande, l'horizon sera recalculé pour maintenir cette relation.
+- **Force externe** : La force externe `F_ext` n'est appliquée que si `add_force` est `true`. Par défaut, elle est appliquée à mi-parcours de la trajectoire.
 
 ## 📄 Licence
 

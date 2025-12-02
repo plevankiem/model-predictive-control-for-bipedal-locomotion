@@ -64,7 +64,7 @@ class ZMPController:
                 z_max_extended[i+1:i+1+preview_n_steps, 1:2], 
                 z_min_extended[i+1:i+1+preview_n_steps, 1:2]
             ))
-            if i == force_time:
+            if self.config.add_force and i == force_time:
                 y_hist[-1] = y_hist[-1] - np.array([[0., self.config.dt * self.config.F_ext / self.config.m, 0.]]).T
                 
         return np.array([[x[0, 0], y[0, 0]] for x, y in zip(x_hist, y_hist)]), np.array(y_hist)
