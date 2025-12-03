@@ -14,23 +14,18 @@ import plotly.graph_objects as go
 # Ajouter le chemin src au PYTHONPATH
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.mpc_bipedal.config import CoPGeneratorConfig, MPCConfig
+from src.mpc_bipedal.config import MPCConfig
 from src.mpc_bipedal.generators import CoPGenerator
 from src.mpc_bipedal.controllers import ZMPController
 
 
-def load_config_from_json(config_file: str):
-    """Charge une configuration depuis un fichier JSON."""
+def load_config_from_json(config_file: str) -> MPCConfig:
+    """Charge une configuration unifiée depuis un fichier JSON."""
     with open(config_file, 'r') as f:
         config_dict = json.load(f)
-    
-    cop_dict = config_dict.get('cop_generator', {}).copy()
-    # Remove dt from cop_generator dict - it will be synchronized from mpc_config
-    cop_dict.pop('dt', None)
-    cop_config = CoPGeneratorConfig(**cop_dict)
-    
+
     mpc_dict = config_dict.get('mpc', {}).copy()
-    
+
     # Handle dt: horizon takes precedence. If only dt is provided, recalculate horizon from it.
     # dt will always be calculated from horizon in __post_init__, so we remove dt from dict.
     if 'dt' in mpc_dict:
@@ -39,13 +34,8 @@ def load_config_from_json(config_file: str):
             # Recalculate horizon from dt to maintain dt = 1.5 / horizon
             mpc_dict['horizon'] = int(1.5 / dt_value)
         # If both dt and horizon are provided, horizon takes precedence (dt will be recalculated)
-    
-    mpc_config = MPCConfig(**mpc_dict)
-    
-    # Synchronize cop_config.dt with mpc_config.dt (dt is calculated from horizon)
-    cop_config.dt = mpc_config.dt
-    
-    return cop_config, mpc_config
+
+    return MPCConfig(**mpc_dict)
 
 
 def main():
@@ -77,53 +67,75 @@ Exemples d'utilisation:
     print("=" * 60)
     print()
     
-    # Load or create configurations
+    # Load or create configuration
     if args.config:
-        cop_config, mpc_config_base = load_config_from_json(args.config)
+        base_config = load_config_from_json(args.config)
     else:
         # Try to load default.json if it exists
         default_config_path = 'configs/default.json'
         if os.path.exists(default_config_path):
-            cop_config, mpc_config_base = load_config_from_json(default_config_path)
+            base_config = load_config_from_json(default_config_path)
         else:
             # Use default values
-            cop_config = CoPGeneratorConfig()
-            mpc_config_base = MPCConfig()
-            # Synchronize cop_config.dt with mpc_config_base.dt
-            cop_config.dt = mpc_config_base.dt
-    
-    # Synchronize cop_config.dt with mpc_config_base.dt
-    cop_config.dt = mpc_config_base.dt
+            base_config = MPCConfig()
     
     # Override F_ext if provided
     if args.F_ext is not None:
-        mpc_config_base.F_ext = args.F_ext
+        base_config.F_ext = args.F_ext
     
     # Create configurations for both methods
     config_strict = MPCConfig(
-        horizon=mpc_config_base.horizon,
-        Q=mpc_config_base.Q,
-        R=mpc_config_base.R,
-        dt=mpc_config_base.dt,
-        h=mpc_config_base.h,
-        g=mpc_config_base.g,
-        m=mpc_config_base.m,
-        F_ext=mpc_config_base.F_ext,
+        ssp_duration=base_config.ssp_duration,
+        dsp_duration=base_config.dsp_duration,
+        standing_duration=base_config.standing_duration,
+        distance=base_config.distance,
+        step_length=base_config.step_length,
+        foot_spread=base_config.foot_spread,
+        horizon=base_config.horizon,
+        Q=base_config.Q,
+        R=base_config.R,
+        dt=base_config.dt,
+        h=base_config.h,
+        g=base_config.g,
+        m=base_config.m,
+        F_ext=base_config.F_ext,
         strict=True,
-        add_force=True  # Enable force application
+        add_force=True,  # Enable force application
+        method=base_config.method,
+        alpha=base_config.alpha,
+        beta=base_config.beta,
+        gamma=base_config.gamma,
+        vx_ref=base_config.vx_ref,
+        vy_ref=base_config.vy_ref,
+        foot_length=base_config.foot_length,
+        foot_width=base_config.foot_width,
     )
     
     config_non_strict = MPCConfig(
-        horizon=mpc_config_base.horizon,
-        Q=mpc_config_base.Q,
-        R=mpc_config_base.R,
-        dt=mpc_config_base.dt,
-        h=mpc_config_base.h,
-        g=mpc_config_base.g,
-        m=mpc_config_base.m,
-        F_ext=mpc_config_base.F_ext,
+        ssp_duration=base_config.ssp_duration,
+        dsp_duration=base_config.dsp_duration,
+        standing_duration=base_config.standing_duration,
+        distance=base_config.distance,
+        step_length=base_config.step_length,
+        foot_spread=base_config.foot_spread,
+        horizon=base_config.horizon,
+        Q=base_config.Q,
+        R=base_config.R,
+        dt=base_config.dt,
+        h=base_config.h,
+        g=base_config.g,
+        m=base_config.m,
+        F_ext=base_config.F_ext,
         strict=False,
-        add_force=True  # Enable force application
+        add_force=True,  # Enable force application
+        method=base_config.method,
+        alpha=base_config.alpha,
+        beta=base_config.beta,
+        gamma=base_config.gamma,
+        vx_ref=base_config.vx_ref,
+        vy_ref=base_config.vy_ref,
+        foot_length=base_config.foot_length,
+        foot_width=base_config.foot_width,
     )
     
     print("Configuration:")
@@ -135,9 +147,9 @@ Exemples d'utilisation:
     
     # Generate CoP trajectory (same for both methods)
     print("Génération de la trajectoire CoP...")
-    cop_generator = CoPGenerator(cop_config)
+    cop_generator = CoPGenerator(config_strict)
     z_max, z_min = cop_generator.generate_cop_trajectory(output_dir=args.output_dir, save_footsteps=False)
-    t = np.arange(z_max.shape[0]) * cop_config.dt
+    t = np.arange(z_max.shape[0]) * config_strict.dt
     print(f"✓ Trajectoire CoP générée ({len(t)} pas de temps)\n")
     
     # Generate COM trajectories for both methods

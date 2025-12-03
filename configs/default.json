@@ -1,13 +1,12 @@
 {
-    "cop_generator": {
+    "mpc": {
         "ssp_duration": 0.24,
         "dsp_duration": 0.03,
         "standing_duration": 1.0,
         "distance": 2.1,
         "step_length": 0.3,
-        "foot_spread": 0.1
-    },
-    "mpc": {
+        "foot_spread": 0.1,
+
         "horizon": 150,
         "Q": 1.0,
         "R": 1e-6,
@@ -16,7 +15,15 @@
         "m": 40.0,
         "F_ext": 400.0,
         "strict": true,
-        "add_force": true
+        "add_force": true,
+        "method": "wieber",
+        "alpha": 1e-6,
+        "beta": 1.0,
+        "gamma": 0.0,
+        "vx_ref": 0.0,
+        "vy_ref": 0.0,
+        "foot_length": 0.11,
+        "foot_width": 0.05
     }
 }
 

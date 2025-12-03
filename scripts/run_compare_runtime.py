@@ -154,6 +154,9 @@ def main():
     strict_valid = np.array(strict_times)[valid_indices] * 1000  # Convert to ms
     non_strict_valid = np.array(non_strict_times)[valid_indices] * 1000  # Convert to ms
     
+    # Calculate dt values for valid horizons (dt = 1.5 / horizon) and convert to ms
+    dt_valid = (1.5 / horizon_valid) * 1000  # Convert to ms
+    
     # Create the plot with Plotly
     fig = go.Figure()
     
@@ -177,6 +180,17 @@ def main():
         line=dict(color='#ff7f0e', width=2),
         marker=dict(size=6, symbol='square'),
         hovertemplate='Horizon: %{x}<br>Time: %{y:.3f} ms<extra></extra>'
+    ))
+    
+    # Add dt trace on same y-axis
+    fig.add_trace(go.Scatter(
+        x=horizon_valid,
+        y=dt_valid,
+        mode='lines+markers',
+        name='dt (ms)',
+        line=dict(color='#2ca02c', width=2, dash='dash'),
+        marker=dict(size=6, symbol='diamond'),
+        hovertemplate='Horizon: %{x}<br>dt: %{y:.3f} ms<extra></extra>'
     ))
     
     # Update layout

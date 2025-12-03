@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from enum import Enum
 from typing import Tuple
-from ..config import CoPGeneratorConfig
+from ..config import MPCConfig
 from .footstep_generator import generate_footsteps
 
 
@@ -20,9 +20,9 @@ class CoPGenerator:
     Generates a viable CoP (Center of Pressure) trajectory to be provided to the ZMPController.
     """
     
-    def __init__(self, config: CoPGeneratorConfig):
+    def __init__(self, config: MPCConfig):
         if config.dt is None:
-            raise ValueError("dt must be set in CoPGeneratorConfig (should be synchronized with MPCConfig.dt)")
+            raise ValueError("dt must be set in MPCConfig (it is shared with the controller)")
         self.ssp_duration = config.ssp_duration
         self.dsp_duration = config.dsp_duration
         self.standing_duration = config.standing_duration

@@ -17,8 +17,97 @@ class ZMPController:
         self.B = np.array([T ** 3 / 6., T ** 2 / 2., T]).reshape((3, 1))
         self.C = np.array([1., 0., -self.config.h / self.config.g])
         self.external_force = True
+    
+    def predict(
+        self,
+        x_init: np.ndarray,
+        nb_steps: int,
+        z_max: np.ndarray = None,
+        z_min: np.ndarray = None,
+        v_ref: float = None,
+        axis: str = 'x'
+    ) -> np.ndarray:
+        """
+        Unified predict method that routes to either wieber or herdt based on config.method.
+        
+        Args:
+            x_init: The initial state of the system (shape: [3, 1]).
+            nb_steps: Number of preview steps.
+            z_max: Maximum ZMP bounds. For wieber: array (shape: [n_steps, 1]). For herdt: scalar (optional).
+            z_min: Minimum ZMP bounds. For wieber: array (shape: [n_steps, 1]). For herdt: scalar (optional).
+            v_ref: Reference velocity for herdt method (optional, uses config.vx_ref or config.vy_ref if None).
+            axis: 'x' or 'y' axis, used for herdt method to select appropriate v_ref.
+        
+        Returns:
+            The predicted state of the system (shape: [3, 1]).
+        """
+        method = self.config.method.lower()
+        
+        if method == "wieber":
+            if z_max is None or z_min is None:
+                raise ValueError("z_max and z_min are required for wieber method")
+            return self.predict_wieber_axis(x_init, nb_steps, z_max, z_min)
+        elif method == "herdt":
+            # For herdt, use scalar bounds from config if not provided
+            if z_max is None or z_min is None:
+                if axis == 'x':
+                    z_max = self.config.foot_length / 2.0
+                    z_min = -self.config.foot_length / 2.0
+                else:  # axis == 'y'
+                    z_max = self.config.foot_width / 2.0
+                    z_min = -self.config.foot_width / 2.0
+            else:
+                # If arrays are provided, extract scalar values (use first element)
+                if isinstance(z_max, np.ndarray):
+                    z_max = float(z_max.flat[0])
+                if isinstance(z_min, np.ndarray):
+                    z_min = float(z_min.flat[0])
+            
+            # Set v_ref from config if not provided
+            if v_ref is None:
+                if axis == 'x':
+                    v_ref = self.config.vx_ref
+                else:
+                    v_ref = self.config.vy_ref
+            
+            return self.predict_herdt_axis(x_init, nb_steps, z_min, z_max, v_ref)
+        else:
+            raise ValueError(f"Unknown method: {method}. Must be 'wieber' or 'herdt'")
+    
+    def generate_com_trajectory(
+        self,
+        x_init: np.ndarray,
+        y_init: np.ndarray,
+        z_max: np.ndarray = None,
+        z_min: np.ndarray = None,
+        v_ref: np.ndarray = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Unified generate_com_trajectory method that routes to either wieber or herdt based on config.method.
+        
+        Args:
+            x_init: The initial x state of the system.
+            y_init: The initial y state of the system.
+            z_max: Maximum ZMP bounds (shape: [n_steps, 2]). Required for wieber method.
+            z_min: Minimum ZMP bounds (shape: [n_steps, 2]). Required for wieber method.
+        
+        Returns:
+            Tuple of (com_trajectory, y_hist) where:
+            - com_trajectory: COM positions (shape: [n_steps, 2])
+            - y_hist: Full y state history (shape: [n_steps, 3, 1])
+        """
+        method = self.config.method.lower()
+        
+        if method == "wieber":
+            if z_max is None or z_min is None:
+                raise ValueError("z_max and z_min are required for wieber method")
+            return self.generate_com_trajectory_wieber(x_init, y_init, z_max, z_min)
+        elif method == "herdt":
+            return self.generate_com_trajectory_herdt(x_init, y_init, v_ref)
+        else:
+            raise ValueError(f"Unknown method: {method}. Must be 'wieber' or 'herdt'")
 
-    def generate_com_trajectory(self, x_init: np.ndarray, y_init: np.ndarray, 
+    def generate_com_trajectory_wieber(self, x_init: np.ndarray, y_init: np.ndarray, 
                                 z_max: np.ndarray, z_min: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Generate the COM trajectory using linear predictive control.
@@ -54,12 +143,12 @@ class ZMPController:
         
         for i in tqdm(range(n_steps-1), desc="Generating COM trajectory"):
             preview_n_steps = self.config.horizon
-            x_hist.append(self.predict(
+            x_hist.append(self.predict_wieber_axis(
                 x_hist[-1], preview_n_steps, 
                 z_max_extended[i+1:i+1+preview_n_steps, 0:1], 
                 z_min_extended[i+1:i+1+preview_n_steps, 0:1]
             ))
-            y_hist.append(self.predict(
+            y_hist.append(self.predict_wieber_axis(
                 y_hist[-1], preview_n_steps, 
                 z_max_extended[i+1:i+1+preview_n_steps, 1:2], 
                 z_min_extended[i+1:i+1+preview_n_steps, 1:2]
@@ -69,7 +158,7 @@ class ZMPController:
                 
         return np.array([[x[0, 0], y[0, 0]] for x, y in zip(x_hist, y_hist)]), np.array(y_hist)
 
-    def predict(self, x_init: np.ndarray, nb_steps: int, z_max: np.ndarray, z_min: np.ndarray) -> np.ndarray:
+    def predict_wieber_axis(self, x_init: np.ndarray, nb_steps: int, z_max: np.ndarray, z_min: np.ndarray) -> np.ndarray:
         """
         Predict the next state of the system using linear predictive control.
         
@@ -123,3 +212,89 @@ class ZMPController:
 
         return result
 
+    def generate_com_trajectory_herdt(
+        self, x_init: np.ndarray, y_init: np.ndarray, v_ref: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate the COM trajectory using herdt method.
+        
+        Args:
+            x_init: The initial x state of the system.
+            y_init: The initial y state of the system.
+            v_ref: The reference velocity of the system.
+        """
+        x_hist, y_hist = [], []
+        x_hist.append(x_init)
+        y_hist.append(y_init)
+        n_steps = len(v_ref)
+        v_ref_extended = np.vstack([
+            v_ref,
+            np.tile(v_ref[-1:], (self.config.horizon, 1))
+        ])
+        
+
+        return (np.empty, np.empty)
+        
+
+    def predict_herdt_axis(
+        self,
+        x_init: np.ndarray,
+        v_ref: np.ndarray,
+        x_fc: np.ndarray,
+        nb_steps: int,
+    ) -> np.ndarray:
+        """
+        Herdt-style prediction for ONE axis (x or y).
+
+        Args:
+            x_init: 3x1 state
+            v_ref: 1xnb_steps speed
+            x_fc: 1xnb_steps foot position
+            nb_steps: preview horizon
+
+        Returns:
+            Next state (3x1) after applying the first jerk.
+        """
+        T = self.config.dt
+        h, g = self.config.h, self.config.g
+
+        # ----- Build ZMP prediction matrices Pzx, Pzu -----
+        Pzx = np.zeros((nb_steps, 3))
+        Pzu = np.zeros((nb_steps, nb_steps))
+        for i in range(nb_steps):
+            Pzx[i, 0] = 1.0
+            Pzx[i, 1] = T * (i + 1)
+            Pzx[i, 2] = (T**2)/2.0 * (i + 1)**2 - h/g
+            for j in range(i + 1):
+                Pzu[i, j] = (T**3)/6.0 * (1 + 3*(i-j) + 3*(i-j)**2) - T * h/g
+
+        # ----- Build velocity prediction matrices Pvs, Pvu -----
+        Pvs = np.zeros((nb_steps, 3))
+        Pvu = np.zeros((nb_steps, nb_steps))
+
+        for i in range(nb_steps):
+            Pvs[i, 1] = 1.0
+            Pvs[i, 2] = (i + 1) * T
+            for j in range(i + 1):
+                Pvu[i, j] = (T**2)/2.0 * (2*(i-j) + 1)
+        
+        # ----- Build the U matrices U_c, U -----
+        dt_footstep = self.config.ssp_duration + self.config.dsp_duration
+        nb_steps_foot = int(dt_footstep / self.config.dt)
+        footstep_horizon = (nb_steps // nb_steps_foot)
+        U = np.zeros((nb_steps, footstep_horizon))
+        U_c = np.zeros((nb_steps, 1))
+
+        U_c[0:nb_steps_foot, 0] = 1
+        for m in range(1, footstep_horizon+1):
+            U[m*nb_steps_foot:(m+1)*nb_steps_foot, m] = 1
+
+
+
+
+
+
+        
+
+
+        

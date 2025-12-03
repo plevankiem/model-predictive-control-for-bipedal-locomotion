@@ -14,24 +14,19 @@ import plotly.graph_objects as go
 # Ajouter le chemin src au PYTHONPATH
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.mpc_bipedal.config import CoPGeneratorConfig, MPCConfig
+from src.mpc_bipedal.config import MPCConfig
 from src.mpc_bipedal.generators import CoPGenerator
 from src.mpc_bipedal.controllers import ZMPController
 from src.mpc_bipedal.utils import visualize_com_trajectory_3d
 
 
-def load_config_from_json(config_file: str):
-    """Charge une configuration depuis un fichier JSON."""
+def load_config_from_json(config_file: str) -> MPCConfig:
+    """Charge une configuration unifiée depuis un fichier JSON."""
     with open(config_file, 'r') as f:
         config_dict = json.load(f)
-    
-    cop_dict = config_dict.get('cop_generator', {}).copy()
-    # Remove dt from cop_generator dict - it will be synchronized from mpc_config
-    cop_dict.pop('dt', None)
-    cop_config = CoPGeneratorConfig(**cop_dict)
-    
+
     mpc_dict = config_dict.get('mpc', {}).copy()
-    
+
     # Handle dt: horizon takes precedence. If only dt is provided, recalculate horizon from it.
     # dt will always be calculated from horizon in __post_init__, so we remove dt from dict.
     if 'dt' in mpc_dict:
@@ -40,13 +35,8 @@ def load_config_from_json(config_file: str):
             # Recalculate horizon from dt to maintain dt = 1.5 / horizon
             mpc_dict['horizon'] = int(1.5 / dt_value)
         # If both dt and horizon are provided, horizon takes precedence (dt will be recalculated)
-    
-    mpc_config = MPCConfig(**mpc_dict)
-    
-    # Synchronize cop_config.dt with mpc_config.dt (dt is calculated from horizon)
-    cop_config.dt = mpc_config.dt
-    
-    return cop_config, mpc_config
+
+    return MPCConfig(**mpc_dict)
 
 
 def create_default_config_file(output_file: str):
@@ -69,11 +59,19 @@ def create_default_config_file(output_file: str):
             "m": 40.0,
             "F_ext": 400.0,
             "strict": True,
-            "add_force": True
+            "add_force": True,
+            "method": "wieber",
+            "alpha": 1e-6,
+            "beta": 1.0,
+            "gamma": 0.0,
+            "vx_ref": 0.0,
+            "vy_ref": 0.0,
+            "foot_length": 0.11,
+            "foot_width": 0.05
         }
     }
     
-    with open(output_file, 'w') as f:
+    with open(output_file, 'w') as f: 
         json.dump(default_config, f, indent=4)
     
     print(f"Fichier de configuration par défaut créé: {output_file}")
@@ -85,14 +83,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples d'utilisation:
-  # Utiliser les paramètres par défaut
+  # Utiliser les paramètres par défaut (méthode wieber)
   python scripts/run_mpc.py
 
   # Utiliser un fichier de configuration
   python scripts/run_mpc.py --config configs/default.json
 
-  # Surcharger certains paramètres
+  # Surcharger certains paramètres (wieber)
   python scripts/run_mpc.py --distance 3.0 --step-length 0.4 --horizon 200
+
+  # Utiliser la méthode Herdt
+  python scripts/run_mpc.py --method herdt --vx-ref 0.2 --vy-ref 0.0
+
+  # Méthode Herdt avec paramètres personnalisés
+  python scripts/run_mpc.py --method herdt --alpha 1e-5 --beta 2.0 --foot-length 0.15
 
   # Créer un fichier de configuration par défaut
   python scripts/run_mpc.py --create-config configs/my_config.json
@@ -125,6 +129,16 @@ Exemples d'utilisation:
     parser.add_argument('--add-force', action='store_true', default=None, help='Ajouter la force externe au moment spécifié')
     parser.add_argument('--no-add-force', action='store_true', dest='no_add_force', help='Ne pas ajouter la force externe')
     
+    # Paramètres spécifiques à la méthode
+    parser.add_argument('--method', type=str, choices=['wieber', 'herdt'], help='Méthode MPC à utiliser (wieber ou herdt)')
+    parser.add_argument('--alpha', type=float, help='Poids de régularisation du jerk pour méthode herdt')
+    parser.add_argument('--beta', type=float, help='Poids du tracking de vélocité pour méthode herdt')
+    parser.add_argument('--gamma', type=float, help='Poids du tracking ZMP pour méthode herdt')
+    parser.add_argument('--vx-ref', type=float, dest='vx_ref', help='Vélocité de référence en x (m/s) pour méthode herdt')
+    parser.add_argument('--vy-ref', type=float, dest='vy_ref', help='Vélocité de référence en y (m/s) pour méthode herdt')
+    parser.add_argument('--foot-length', type=float, dest='foot_length', help='Longueur du pied (m) pour méthode herdt')
+    parser.add_argument('--foot-width', type=float, dest='foot_width', help='Largeur du pied (m) pour méthode herdt')
+    
     # Options d'exécution
     parser.add_argument('--no-visualization', action='store_true', help='Ne pas afficher les visualisations')
     parser.add_argument('--save-animation', action='store_true', help='Sauvegarder l\'animation 3D')
@@ -138,70 +152,81 @@ Exemples d'utilisation:
         create_default_config_file(args.create_config)
         return
     
-    # Charger ou créer les configurations
+    # Charger ou créer la configuration unifiée
     if args.config:
-        cop_config, mpc_config = load_config_from_json(args.config)
+        config = load_config_from_json(args.config)
     else:
         # Essayer de charger default.json par défaut s'il existe
         default_config_path = 'configs/default.json'
         if os.path.exists(default_config_path):
-            cop_config, mpc_config = load_config_from_json(default_config_path)
+            config = load_config_from_json(default_config_path)
         else:
-            # Sinon utiliser les valeurs par défaut des classes
-            cop_config = CoPGeneratorConfig()
-            mpc_config = MPCConfig()
-    
-    # Synchronize cop_config.dt with mpc_config.dt after loading
-    cop_config.dt = mpc_config.dt
+            # Sinon utiliser les valeurs par défaut de la classe
+            config = MPCConfig()
     
     # Appliquer les arguments de ligne de commande
     if args.distance is not None:
-        cop_config.distance = args.distance
+        config.distance = args.distance
     if args.step_length is not None:
-        cop_config.step_length = args.step_length
+        config.step_length = args.step_length
     if args.foot_spread is not None:
-        cop_config.foot_spread = args.foot_spread
+        config.foot_spread = args.foot_spread
     if args.ssp_duration is not None:
-        cop_config.ssp_duration = args.ssp_duration
+        config.ssp_duration = args.ssp_duration
     if args.dsp_duration is not None:
-        cop_config.dsp_duration = args.dsp_duration
+        config.dsp_duration = args.dsp_duration
     if args.standing_duration is not None:
-        cop_config.standing_duration = args.standing_duration
+        config.standing_duration = args.standing_duration
     # Handle horizon and dt: horizon takes precedence if both are provided
     if args.horizon is not None:
-        mpc_config.horizon = args.horizon
+        config.horizon = args.horizon
         # Recalculate dt from horizon
-        mpc_config.dt = 1.5 / mpc_config.horizon
+        config.dt = 1.5 / config.horizon
     elif args.dt is not None:
         # If only dt is provided via command line, recalculate horizon to maintain dt = 1.5 / horizon
-        mpc_config.horizon = int(1.5 / args.dt)
-        mpc_config.dt = 1.5 / mpc_config.horizon
+        config.horizon = int(1.5 / args.dt)
+        config.dt = 1.5 / config.horizon
     else:
         # Recalculate dt from horizon to ensure consistency
-        mpc_config.dt = 1.5 / mpc_config.horizon
-    
-    # Synchronize cop_config.dt with mpc_config.dt
-    cop_config.dt = mpc_config.dt
+        config.dt = 1.5 / config.horizon
     if args.Q is not None:
-        mpc_config.Q = args.Q
+        config.Q = args.Q
     if args.R is not None:
-        mpc_config.R = args.R
+        config.R = args.R
     if args.h is not None:
-        mpc_config.h = args.h
+        config.h = args.h
     if args.m is not None:
-        mpc_config.m = args.m
+        config.m = args.m
     if args.F_ext is not None:
-        mpc_config.F_ext = args.F_ext
+        config.F_ext = args.F_ext
     # Gérer strict/no-strict : appliquer seulement si explicitement fourni
     if args.strict:
-        mpc_config.strict = True
+        config.strict = True
     elif args.no_strict:
-        mpc_config.strict = False
+        config.strict = False
     # Gérer add_force/no-add-force : appliquer seulement si explicitement fourni
     if args.add_force:
-        mpc_config.add_force = True
+        config.add_force = True
     elif args.no_add_force:
-        mpc_config.add_force = False
+        config.add_force = False
+    
+    # Appliquer les paramètres de méthode
+    if args.method is not None:
+        config.method = args.method
+    if args.alpha is not None:
+        config.alpha = args.alpha
+    if args.beta is not None:
+        config.beta = args.beta
+    if args.gamma is not None:
+        config.gamma = args.gamma
+    if args.vx_ref is not None:
+        config.vx_ref = args.vx_ref
+    if args.vy_ref is not None:
+        config.vy_ref = args.vy_ref
+    if args.foot_length is not None:
+        config.foot_length = args.foot_length
+    if args.foot_width is not None:
+        config.foot_width = args.foot_width
     
     # Créer le répertoire de sortie
     os.makedirs(args.output_dir, exist_ok=True)
@@ -210,59 +235,108 @@ Exemples d'utilisation:
     print("Configuration MPC pour la locomotion bipède")
     print("=" * 60)
     print("\nCoP Generator Config:")
-    print(f"  Distance: {cop_config.distance} m")
-    print(f"  Step length: {cop_config.step_length} m")
-    print(f"  Foot spread: {cop_config.foot_spread} m")
-    print(f"  dt: {cop_config.dt} s")
+    print(f"  Distance: {config.distance} m")
+    print(f"  Step length: {config.step_length} m")
+    print(f"  Foot spread: {config.foot_spread} m")
+    print(f"  dt: {config.dt} s")
     print("\nMPC Config:")
-    print(f"  Horizon: {mpc_config.horizon}")
-    print(f"  Q: {mpc_config.Q}")
-    print(f"  R: {mpc_config.R}")
-    print(f"  h: {mpc_config.h} m")
-    print(f"  m: {mpc_config.m} kg")
-    print(f"  F_ext: {mpc_config.F_ext} N")
-    print(f"  Strict: {mpc_config.strict}")
-    print(f"  Add force: {mpc_config.add_force}")
+    print(f"  Method: {config.method}")
+    print(f"  Horizon: {config.horizon}")
+    print(f"  Q: {config.Q}")
+    print(f"  R: {config.R}")
+    print(f"  h: {config.h} m")
+    print(f"  m: {config.m} kg")
+    print(f"  F_ext: {config.F_ext} N")
+    print(f"  Strict: {config.strict}")
+    print(f"  Add force: {config.add_force}")
+    if config.method.lower() == "herdt":
+        print(f"\n  Herdt-specific parameters:")
+        print(f"    alpha: {config.alpha}")
+        print(f"    beta: {config.beta}")
+        print(f"    gamma: {config.gamma}")
+        print(f"    vx_ref: {config.vx_ref} m/s")
+        print(f"    vy_ref: {config.vy_ref} m/s")
+        print(f"    foot_length: {config.foot_length} m")
+        print(f"    foot_width: {config.foot_width} m")
     print("=" * 60)
     print()
     
-    # Générer la trajectoire CoP
-    print("Génération de la trajectoire CoP...")
-    cop_generator = CoPGenerator(cop_config)
-    z_max, z_min = cop_generator.generate_cop_trajectory(output_dir=args.output_dir)
-    t = np.arange(z_max.shape[0]) * cop_config.dt
-    print(f"✓ Trajectoire CoP générée ({len(t)} pas de temps)\n")
+    # Générer la trajectoire CoP (seulement pour méthode wieber)
+    z_max, z_min = None, None
+    if config.method.lower() == "wieber":
+        print("Génération de la trajectoire CoP...")
+        cop_generator = CoPGenerator(config)
+        z_max, z_min = cop_generator.generate_cop_trajectory(output_dir=args.output_dir)
+        t = np.arange(z_max.shape[0]) * config.dt
+        print(f"✓ Trajectoire CoP générée ({len(t)} pas de temps)\n")
+    else:
+        print("Méthode Herdt: pas de génération de trajectoire CoP (utilisation des limites rectangulaires internes)\n")
     
     # Générer la trajectoire COM
-    print("Génération de la trajectoire COM...")
-    controller = ZMPController(mpc_config)
+    print(f"Génération de la trajectoire COM (méthode: {config.method})...")
+    controller = ZMPController(config)
     x_init = np.array([[0., 0., 0.]]).T
     y_init = np.array([[0., 0., 0.]]).T
-    com_trajectory, y_hist = controller.generate_com_trajectory(x_init, y_init, z_max, z_min)
+    
+    if config.method.lower() == "wieber":
+        com_trajectory, y_hist = controller.generate_com_trajectory(x_init, y_init, z_max, z_min)
+    else:  # herdt
+        com_trajectory, y_hist = controller.generate_com_trajectory(x_init, y_init)
+    
     print(f"✓ Trajectoire COM générée\n")
     
     # Calculer l'estimation ZMP
     C_dot_y_hist = np.tensordot(y_hist[:, :, 0], controller.C, axes=([1], [0]))
     print(f"Shape de la trajectoire COM: {com_trajectory.shape}\n")
     
+    # Créer le vecteur de temps pour la visualisation
+    if config.method.lower() == "wieber":
+        t = np.arange(z_max.shape[0]) * config.dt
+    else:  # herdt
+        t = np.arange(len(com_trajectory)) * config.dt
+    
     # Visualisation ZMP (toujours affichée comme dans mpc.py original, sauf si --no-visualization)
     if not args.no_visualization:
-        print("Affichage du graphique ZMP (CoP Limits Over Time)...")
+        print("Affichage du graphique ZMP...")
         fig = go.Figure()
         
-        fig.add_trace(go.Scatter(
-            x=t, y=z_max[:, 1],
-            mode='lines',
-            name='z_max',
-            line=dict(color='red', dash='dash')
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=t, y=z_min[:, 1],
-            mode='lines',
-            name='z_min',
-            line=dict(color='blue', dash='dash')
-        ))
+        if config.method.lower() == "wieber":
+            # Pour wieber, afficher les limites CoP
+            fig.add_trace(go.Scatter(
+                x=t, y=z_max[:, 1],
+                mode='lines',
+                name='z_max',
+                line=dict(color='red', dash='dash')
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=t, y=z_min[:, 1],
+                mode='lines',
+                name='z_min',
+                line=dict(color='blue', dash='dash')
+            ))
+            
+            title = "CoP Limits Over Time (Wieber Method)"
+        else:
+            # Pour herdt, afficher les limites rectangulaires constantes
+            z_y_max_const = config.foot_width / 2.0
+            z_y_min_const = -config.foot_width / 2.0
+            
+            fig.add_trace(go.Scatter(
+                x=[t[0], t[-1]], y=[z_y_max_const, z_y_max_const],
+                mode='lines',
+                name='z_max (constant)',
+                line=dict(color='red', dash='dash')
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=[t[0], t[-1]], y=[z_y_min_const, z_y_min_const],
+                mode='lines',
+                name='z_min (constant)',
+                line=dict(color='blue', dash='dash')
+            ))
+            
+            title = "ZMP Trajectory (Herdt Method)"
         
         fig.add_trace(go.Scatter(
             x=t, y=C_dot_y_hist,
@@ -279,9 +353,9 @@ Exemples d'utilisation:
         ))
         
         fig.update_layout(
-            title="CoP Limits Over Time",
+            title=title,
             xaxis_title="Time (s)",
-            yaxis_title="Y Axis",
+            yaxis_title="Y Axis (m)",
             legend=dict(x=0, y=1),
             template="plotly_white"
         )
@@ -293,7 +367,7 @@ Exemples d'utilisation:
         print("Affichage de la visualisation 3D...")
         visualize_com_trajectory_3d(
             com_trajectory, 
-            h=mpc_config.h,
+            h=config.h,
             show_sphere=True, 
             save_animation=args.save_animation,
             output_file=os.path.join(args.output_dir, 'com_trajectory_3d.gif')
