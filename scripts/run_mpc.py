@@ -54,6 +54,7 @@ def create_default_config_file(output_file: str):
             "horizon": 150,
             "Q": 1.0,
             "R": 1e-6,
+            "S": 1.0,
             "h": 0.75,
             "g": 9.81,
             "m": 40.0,
@@ -121,6 +122,7 @@ Exemples d'utilisation:
     parser.add_argument('--horizon', type=int, help='Horizon de prédiction')
     parser.add_argument('--Q', type=float, help='Poids du tracking (Q)')
     parser.add_argument('--R', type=float, help='Poids de la régularisation (R)')
+    parser.add_argument('--S', type=float, help='Poids de la régularisation (S)')
     parser.add_argument('--h', type=float, help='Hauteur du COM (m)')
     parser.add_argument('--m', type=float, help='Masse du robot (kg)')
     parser.add_argument('--F-ext', type=float, dest='F_ext', help='Force externe (N)')
@@ -193,6 +195,8 @@ Exemples d'utilisation:
         config.Q = args.Q
     if args.R is not None:
         config.R = args.R
+    if args.S is not None:
+        config.S = args.S
     if args.h is not None:
         config.h = args.h
     if args.m is not None:
@@ -244,6 +248,7 @@ Exemples d'utilisation:
     print(f"  Horizon: {config.horizon}")
     print(f"  Q: {config.Q}")
     print(f"  R: {config.R}")
+    print(f"  S: {config.S}")
     print(f"  h: {config.h} m")
     print(f"  m: {config.m} kg")
     print(f"  F_ext: {config.F_ext} N")
@@ -266,7 +271,7 @@ Exemples d'utilisation:
     if config.method.lower() == "wieber":
         print("Génération de la trajectoire CoP...")
         cop_generator = CoPGenerator(config)
-        z_max, z_min = cop_generator.generate_cop_trajectory(output_dir=args.output_dir)
+        z_max, z_min, _ = cop_generator.generate_cop_trajectory(output_dir=args.output_dir)
         t = np.arange(z_max.shape[0]) * config.dt
         print(f"✓ Trajectoire CoP générée ({len(t)} pas de temps)\n")
     else:

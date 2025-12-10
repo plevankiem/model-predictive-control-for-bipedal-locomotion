@@ -3,7 +3,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from enum import Enum
-from typing import Tuple
+from typing import Tuple, List
 from ..config import MPCConfig
 from .footstep_generator import generate_footsteps
 
@@ -31,7 +31,7 @@ class CoPGenerator:
         self.step_length = config.step_length
         self.foot_spread = config.foot_spread
     
-    def generate_cop_trajectory(self, save_footsteps: bool = True, output_dir: str = 'results') -> Tuple[np.ndarray, np.ndarray]:
+    def generate_cop_trajectory(self, save_footsteps: bool = True, output_dir: str = 'results') -> Tuple[np.ndarray, np.ndarray, List[State]]:
         """
         Generate CoP trajectory from footsteps.
         
@@ -40,7 +40,10 @@ class CoPGenerator:
             output_dir: Directory to save the footsteps plot
             
         Returns:
-            Tuple of (z_max, z_min) arrays defining the CoP bounds
+            Tuple of:
+                - z_max: array of upper CoP bounds
+                - z_min: array of lower CoP bounds
+                - states: list of walking State values for each bound sample
         """
         footsteps = generate_footsteps(
             distance=self.distance,
@@ -71,7 +74,7 @@ class CoPGenerator:
         state = State.STANDING
         t = 0.
         next_state_change = self.standing_duration
-        z_max, z_min = [], []
+        z_max, z_min, states = [], [], []
         
         while curr_footstep < len(footsteps):
             if t > next_state_change:
@@ -105,8 +108,8 @@ class CoPGenerator:
                 else:
                     z_max.append([footsteps[curr_footstep].z_max[0], footsteps[curr_footstep].z_max[1]])
                     z_min.append([footsteps[curr_footstep].z_min[0], footsteps[curr_footstep].z_min[1]])
+                states.append(state)
             
             t += self.dt
-
-        return np.array(z_max), np.array(z_min)
-
+        
+        return np.array(z_max), np.array(z_min), states

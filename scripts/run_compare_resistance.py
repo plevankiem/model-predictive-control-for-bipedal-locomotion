@@ -148,7 +148,7 @@ Exemples d'utilisation:
     # Generate CoP trajectory (same for both methods)
     print("Génération de la trajectoire CoP...")
     cop_generator = CoPGenerator(config_strict)
-    z_max, z_min = cop_generator.generate_cop_trajectory(output_dir=args.output_dir, save_footsteps=False)
+    z_max, z_min, _ = cop_generator.generate_cop_trajectory(output_dir=args.output_dir, save_footsteps=False)
     t = np.arange(z_max.shape[0]) * config_strict.dt
     print(f"✓ Trajectoire CoP générée ({len(t)} pas de temps)\n")
     
@@ -217,17 +217,13 @@ Exemples d'utilisation:
     
     # Update layout
     fig.update_layout(
-        title={
-            'text': f'ZMP Trajectory Comparison (F_ext = {config_strict.F_ext} N)',
-            'x': 0.5,
-            'xanchor': 'center',
-            'font': {'size': 16, 'color': 'black'}
-        },
         xaxis_title='Time (s)',
         yaxis_title='Y Axis (m)',
         legend=dict(
-            x=0.02,
-            y=0.98,
+            orientation='h',
+            x=0.5,
+            xanchor='center',
+            y=1.05,
             bgcolor='rgba(255, 255, 255, 0.8)',
             bordercolor='rgba(0, 0, 0, 0.2)',
             borderwidth=1
@@ -236,7 +232,7 @@ Exemples d'utilisation:
         template='plotly_white',
         width=1200,
         height=700,
-        margin=dict(l=60, r=20, t=80, b=50)
+        margin=dict(l=60, r=20, t=40, b=50)
     )
     
     # Save the plot as PNG

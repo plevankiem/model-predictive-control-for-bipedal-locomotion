@@ -16,8 +16,8 @@ class MPCConfig:
 
     # --- CoP generator parameters ---
     ssp_duration: float = 24 * 0.01
-    dsp_duration: float = 3 * 0.01
-    standing_duration: float = 100 * 0.01
+    dsp_duration: float = 1 * 0.01
+    standing_duration: float = 50 * 0.01
     distance: float = 2.1
     step_length: float = 0.3
     foot_spread: float = 0.1
@@ -30,6 +30,7 @@ class MPCConfig:
     horizon: int = 150
     Q: float = 1.0
     R: float = 1e-6
+    S: float = 1.0
     h: float = 0.75
     g: float = 9.81
     m: float = 40.0
@@ -41,11 +42,44 @@ class MPCConfig:
     method: str = "wieber"
     alpha: float = 1e-6
     beta: float = 1.0
-    gamma: float = 0.0
+    gamma: float = 1.0
     vx_ref: float = 0.0
     vy_ref: float = 0.0
     foot_length: float = 0.11
     foot_width: float = 0.05
+    v_max_x: float = 0.9
+    v_max_y: float = 0.5
+    # Speed generation strategy for reference velocities
+    # "wieber" uses MPC-derived COM trajectory; "classic" uses fixed vx
+    speed_generation: str = "classic"
+    # Footstep polytopes (relative vertices) for left/right swing
+    # The next footstep offset [dx, dy] must lie inside the chosen polytope
+    left_foot_polytope: tuple = (
+        (-0.1,-0.3),
+        (-0.1, -0.4),
+        (0.0, -0.4),
+        (0.0, -0.2),
+        (0.1, -0.17),
+        (0.2, -0.13),
+        (0.3,-0.1),
+        (0.7, -0.05),
+        (0.8, -0.05),
+        (0.8, -0.3),
+        (0.4,-0.35)
+    )
+    right_foot_polytope: tuple = (
+        (-0.1, 0.3),
+        (-0.1, 0.4),
+        (0.0, 0.4),
+        (0.0, 0.2),
+        (0.1, 0.17),
+        (0.2, 0.13),
+        (0.3, 0.1),
+        (0.7, 0.05),
+        (0.8, 0.05),
+        (0.8, 0.3),
+        (0.4, 0.35)
+    )
 
     def __post_init__(self):
         """Calculate dt from horizon if not explicitly provided."""
