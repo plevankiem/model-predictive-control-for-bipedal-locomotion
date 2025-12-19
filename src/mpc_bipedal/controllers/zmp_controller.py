@@ -451,10 +451,10 @@ class ZMPController:
         x_hist.append(x_init)
         y_hist.append(y_init)
         n_steps = len(v_ref)
-        force_time = n_steps // 3
+        force_time = n_steps // 2
         x_fc = np.array([[0.0]])
         y_fc = np.array([[self.config.foot_spread]])
-        foot_side = "right"
+        foot_side = "left"
         x_airc = x_fc.copy()
         y_airc = y_fc.copy()
         x_fc_hist = [x_fc]
@@ -487,6 +487,7 @@ class ZMPController:
                 x_airc,
                 y_airc,
                 foot_side,
+                i,
             )
             x_hist.append(x_next)
             y_hist.append(y_next)
@@ -495,13 +496,27 @@ class ZMPController:
                 x_airc += (1 / nb_steps_to_next_state[i][0]) * (first_x_footstep - x_airc)
             if first_y_footstep is not None:
                 y_airc += (1 / nb_steps_to_next_state[i][0]) * (first_y_footstep - y_airc)
+            
+            # Record footstep when transitioning from SINGLE_SUPPORT (footstep is finalized)
             if state_ref[i+1] != current_state and current_state == State.SINGLE_SUPPORT:
                 foot_side = "left" if foot_side == "right" else "right"
-                x_fc_hist.append(np.array([[float(first_x_footstep)]]))
-                y_fc_hist.append(np.array([[float(first_y_footstep)]]))
-                y_airc = y_fc_hist[-1]
-                x_airc = x_fc_hist[-1]
+                # Use the QP solution (first_x_footstep) which is the correct footstep position
+                # Note: first_x_footstep should not be None here since we're transitioning from SINGLE_SUPPORT
+                # which means a footstep was being planned
+                if first_x_footstep is not None and first_y_footstep is not None:
+                    print(f"Je change : de ({x_fc_hist[-1][0, 0], y_fc_hist[-1][0, 0]}) à ({first_x_footstep, first_y_footstep})")
+                    x_fc_hist.append(np.array([[float(first_x_footstep)]]))
+                    y_fc_hist.append(np.array([[float(first_y_footstep)]]))
+                else:
+                    # Fallback: use interpolated value if QP solution is not available
+                    print(f"Je change : de ({x_fc_hist[-1][0, 0], y_fc_hist[-1][0, 0]}) à ({x_airc[0, 0], y_airc[0, 0]}) [using interpolated value]")
+                    x_fc_hist.append(x_airc.copy())
+                    y_fc_hist.append(y_airc.copy())
+                # Reset air footstep to the new current footstep
+                x_airc = x_fc_hist[-1].copy()
+                y_airc = y_fc_hist[-1].copy()
             else:
+                # No footstep change: keep current footstep position
                 x_fc_hist.append(x_fc_hist[-1])
                 y_fc_hist.append(y_fc_hist[-1])
             if self.config.add_force and i == force_time:
@@ -510,6 +525,9 @@ class ZMPController:
                 current_state = state_ref[i+1]
         com_traj = np.array([[x[0, 0], y[0, 0]] for x, y in zip(x_hist, y_hist)])
         foot_hist = np.array([[xf[0, 0], yf[0, 0]] for xf, yf in zip(x_fc_hist, y_fc_hist)])
+        # self.create_gif("right")
+        # self.create_gif("left")
+
         return com_traj, np.array(y_hist), foot_hist
 
     def predict_herdt_joint(
@@ -526,6 +544,7 @@ class ZMPController:
         x_airc: np.ndarray,
         y_airc: np.ndarray,
         foot_side: str,
+        idx: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Joint Herdt-style prediction that solves a single QP for both axes.
@@ -660,11 +679,96 @@ class ZMPController:
         Aineq_y = np.vstack([A_dx_y, -A_dx_y])
         bineq_y = np.vstack([rhs_upper_y, rhs_lower_y]).flatten()
 
+        # Remove ZMP constraints for timesteps with State.STANDING
+        # state_ref contains states for the N horizon timesteps
+        standing_indices = np.where(state_ref == State.STANDING)[0]
+        
+        if len(standing_indices) > 0:
+            # Create mask: True for rows to keep, False for rows to remove
+            # For each STANDING timestep i, we remove row i (upper bound) and row i+N (lower bound)
+            keep_mask = np.ones(Aineq_x.shape[0], dtype=bool)
+            for idx in standing_indices:
+                keep_mask[idx] = False  # Remove upper bound row
+                keep_mask[idx + N] = False  # Remove lower bound row
+            
+            # Filter constraint matrices and bounds
+            Aineq_x = Aineq_x[keep_mask]
+            bineq_x = bineq_x[keep_mask]
+            Aineq_y = Aineq_y[keep_mask]
+            bineq_y = bineq_y[keep_mask]
+
         # Embed constraints in full variable space
+        
         A_block_x = np.hstack([Aineq_x, np.zeros((Aineq_x.shape[0], N + m))])
         A_block_y = np.hstack([np.zeros((Aineq_y.shape[0], N + m)), Aineq_y])
-        constraints.append(A_block_x @ u <= bineq_x)
-        constraints.append(A_block_y @ u <= bineq_y)
+        
+        # Add safety margin to ZMP constraints (reduces bounds to keep ZMP away from edges)
+        safety_margin = 0.0  # meters - safety margin for ZMP constraints
+        
+        if Aineq_x.shape[0] > 0:
+            bineq_x_safe = bineq_x - safety_margin
+            constraints.append(A_block_x @ u <= bineq_x_safe)
+        if Aineq_y.shape[0] > 0:
+            bineq_y_safe = bineq_y - safety_margin
+            constraints.append(A_block_y @ u <= bineq_y_safe)
+        
+        # Standing constraints: ZMP must be within convex hull of both feet
+        if (current_state == State.STANDING or Aineq_x.shape[0] == 0) and len(standing_indices) > 0:
+            if foot_side == "left":
+                # Left foot (current) at (x_fc, y_fc), right foot at (x_fc, y_fc - 2*foot_spread)
+                y_left_center = float(y_fc)
+                y_right_center = float(y_fc) - 2 * self.config.foot_spread
+            else:  # foot_side == "right"
+                # Right foot (current) at (x_fc, y_fc), left foot at (x_fc, y_fc + 2*foot_spread)
+                y_right_center = float(y_fc)
+                y_left_center = float(y_fc) + 2 * self.config.foot_spread
+            
+            # Compute bounds for convex hull of both feet
+            # X bounds: both feet have same x position, width is foot_length
+            x_fc_val = float(x_fc)
+            x_min_standing = x_fc_val - 0.5 * self.config.foot_length
+            x_max_standing = x_fc_val + 0.5 * self.config.foot_length
+            
+            # Y bounds: span from leftmost edge of left foot to rightmost edge of right foot
+            y_min_standing = min(y_left_center, y_right_center) - 0.5 * self.config.foot_width
+            y_max_standing = max(y_left_center, y_right_center) + 0.5 * self.config.foot_width
+            
+            # Create constraints for STANDING timesteps only
+            n_standing = len(standing_indices)
+            
+            # Build constraint matrices for STANDING timesteps
+        
+            A_standing_x = np.zeros((2 * n_standing, N + m))
+            b_standing_x = np.zeros(2 * n_standing)
+            
+            for j, idx in enumerate(standing_indices):
+                # Upper bound: Pzu[idx, :] @ u_x <= x_max_standing - Pzx[idx, :] @ x_init
+                A_standing_x[j, :N] = Pzu[idx, :]
+                b_standing_x[j] = x_max_standing - (Pzx[idx, :] @ x_init).item()
+                
+                # Lower bound: -Pzu[idx, :] @ u_x <= -x_min_standing + Pzx[idx, :] @ x_init
+                A_standing_x[n_standing + j, :N] = -Pzu[idx, :]
+                b_standing_x[n_standing + j] = -x_min_standing + (Pzx[idx, :] @ x_init).item()
+            
+            # For y-axis: similar structure
+            A_standing_y = np.zeros((2 * n_standing, N + m))
+            b_standing_y = np.zeros(2 * n_standing)
+            
+            for j, idx in enumerate(standing_indices):
+                # Upper bound: Pzu[idx, :] @ u_y <= y_max_standing - Pzx[idx, :] @ y_init
+                A_standing_y[j, :N] = Pzu[idx, :]
+                b_standing_y[j] = y_max_standing - (Pzx[idx, :] @ y_init).item()
+                
+                # Lower bound: -Pzu[idx, :] @ u_y <= -y_min_standing + Pzx[idx, :] @ y_init
+                A_standing_y[n_standing + j, :N] = -Pzu[idx, :]
+                b_standing_y[n_standing + j] = -y_min_standing + (Pzx[idx, :] @ y_init).item()
+            
+            # Embed in full variable space
+            A_block_standing_x = np.hstack([A_standing_x, np.zeros((2 * n_standing, N + m))])
+            A_block_standing_y = np.hstack([np.zeros((2 * n_standing, N + m)), A_standing_y])
+            
+            constraints.append(A_block_standing_x @ u <= b_standing_x)
+            constraints.append(A_block_standing_y @ u <= b_standing_y)
         
         # Footsteps constraints
         if m > 0:
@@ -706,21 +810,145 @@ class ZMPController:
 
         x_next = self.A @ x_init + self.B * first_jerk_x
         y_next = self.A @ y_init + self.B * first_jerk_y
+        if m > 0:
+            # Verify constraint is satisfied
+            A_poly, b_poly = self._polytope_halfspace(poly_vertices)
+            offset = np.array([first_x_footstep - x_fc[0, 0], first_y_footstep - y_fc[0, 0]])
+            constraint_values = A_poly @ offset - b_poly
+            max_violation = np.max(constraint_values)
+            if max_violation > 1e-3:
+                print(f"WARNING: Constraint violation at step {idx}: max violation = {max_violation:.2e}")
+                print(f"  Footstep: ({first_x_footstep:.4f}, {first_y_footstep:.4f})")
+                print(f"  Current foot: ({x_fc[0, 0]:.4f}, {y_fc[0, 0]:.4f})")
+                print(f"  Offset: ({offset[0]:.4f}, {offset[1]:.4f})")
+            
+            self.plot_solution(poly_vertices, first_x_footstep, first_y_footstep, x_fc[0, 0], y_fc[0, 0], foot_side, idx)
         return x_next, y_next, first_x_footstep, first_y_footstep
 
     def _polytope_halfspace(self, vertices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Convert ordered convex polygon vertices to half-space form A x <= b.
 
-        Normals point outward; inequalities describe the interior.
+        SciPy's ConvexHull.equations returns [a, b, c] where:
+        - a*x + b*y + c = 0 is the hyperplane equation
+        - The normal [a, b] points OUTWARD from the hull
+        - For points INSIDE: a*x + b*y + c <= 0
+        
+        We want A @ x <= b to represent the interior, so:
+        - A = [a, b] (the outward normal)
+        - b = -c (so A @ x <= b means a*x + b*y <= -c, i.e., a*x + b*y + c <= 0)
         """
+        verts = np.asarray(vertices, dtype=float)
+        if verts.ndim != 2 or verts.shape[1] != 2 or len(verts) < 3:
+            raise ValueError("Polytope must be array-like of shape (k, 2), k>=3")
+
+        # Use SciPy convex hull to get half-space representation
+        hull = ConvexHull(verts)
+        equations = hull.equations  # shape (n_facets, 3) with [a, b, c]
+        
+        # Extract A (normals) and b (offsets)
+        # equations format: [a, b, c] where a*x + b*y + c <= 0 for interior points
+        # We want A @ x <= b, so: A = [a, b] and b = -c
+        A = equations[:, :2]
+        b = -equations[:, 2]
+        
+        # Verify: check that vertices satisfy the original SciPy format
+        # Each vertex should satisfy at least one constraint with equality (on boundary)
+        # and all others with <= (inside or on boundary)
+        vertex_values = (equations[:, :2] @ verts.T).T + equations[:, 2].reshape(1, -1)  # a*x + b*y + c
+        # All vertices should satisfy a*x + b*y + c <= 0 (with tolerance for boundary)
+        max_violation = np.max(vertex_values)
+        if max_violation > 1e-10:
+            # This indicates a problem with the conversion
+            raise ValueError(f"Polytope half-space conversion failed: max violation = {max_violation}")
+        
+        return A, b
+    
+    def plot_solution(self, vertices: np.ndarray, x_f: float, y_f: float, x_fc: float, y_fc: float, side: str, idx: int):
+        # Save the convex hull plot of the polytope using matplotlib
+        import matplotlib.pyplot as plt
         verts = np.asarray(vertices, dtype=float)
         if verts.ndim != 2 or verts.shape[1] != 2 or len(verts) < 3:
             raise ValueError("Polytope must be array-like of shape (k, 2), k>=3")
 
         # Use SciPy convex hull to get half-space representation (outward normals)
         hull = ConvexHull(verts)
-        equations = hull.equations  # shape (n_facets, 3) with [n1, n2, offset]
-        A = equations[:, :2]
-        b = -equations[:, 2]
-        return A, b
+        
+        # Shift vertices to absolute coordinates (polytope is defined relative to current foot)
+        verts_absolute = verts + np.array([[x_fc, y_fc]])
+        
+        # Compute offset (relative position)
+        offset = np.array([x_f - x_fc, y_f - y_fc])
+
+        fig, ax = plt.subplots()
+        # Plot polytope in absolute coordinates
+        ax.plot(verts_absolute[:, 0], verts_absolute[:, 1], "o", label="Polytope vertices (absolute)")
+        for simplex in hull.simplices:
+            x = verts_absolute[simplex, 0]
+            y = verts_absolute[simplex, 1]
+            ax.plot(x, y, "k-", linewidth=2)
+        # Close the polytope
+        first_vertex = verts_absolute[hull.simplices[0, 0]]
+        last_vertex = verts_absolute[hull.simplices[-1, 1]]
+        ax.plot([last_vertex[0], first_vertex[0]], [last_vertex[1], first_vertex[1]], "k-", linewidth=2)
+        
+        # Plot current foot position
+        ax.scatter(x_fc, y_fc, color='g', s=100, marker='s', label='Current foot', zorder=5)
+        
+        # Plot footstep position
+        ax.scatter(x_f, y_f, color='r', s=100, marker='*', label='Planned footstep', zorder=5)
+        
+        # Plot offset vector
+        ax.arrow(x_fc, y_fc, offset[0], offset[1], head_width=0.02, head_length=0.02, 
+                fc='blue', ec='blue', label='Offset (relative)', zorder=4)
+        
+        # Also plot polytope at origin for reference (relative coordinates)
+        ax.plot(verts[:, 0], verts[:, 1], "o", alpha=0.3, markersize=4, label="Polytope (relative, at origin)")
+        for simplex in hull.simplices:
+            x = verts[simplex, 0]
+            y = verts[simplex, 1]
+            ax.plot(x, y, "k--", alpha=0.3, linewidth=1)
+        first_vertex_rel = verts[hull.simplices[0, 0]]
+        last_vertex_rel = verts[hull.simplices[-1, 1]]
+        ax.plot([last_vertex_rel[0], first_vertex_rel[0]], [last_vertex_rel[1], first_vertex_rel[1]], 
+                "k--", alpha=0.3, linewidth=1)
+        
+        ax.set_aspect("equal")
+        ax.set_title(f"Polytope Constraint Check (step {idx})")
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        ax.legend(loc='best', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f"results/{side}/polytope_convex_hull_{side}_{idx}.png", dpi=150)
+        plt.close(fig)
+
+    def create_gif(self, side):
+        import os
+        import glob
+        from PIL import Image
+
+        def natural_sort_key(s):
+            import re
+            return [int(text) if text.isdigit() else text.lower()
+                    for text in re.split('([0-9]+)', s)]
+
+        folder = f"results/{side}"
+        image_files = sorted(
+            glob.glob(os.path.join(folder, "*.png")),
+            key=natural_sort_key
+        )
+        if not image_files:
+            print(f"No images found in {folder} to create a GIF.")
+            return
+
+        images = [Image.open(img_path) for img_path in image_files]
+        gif_path = os.path.join("results", f"animation_{side}.gif")
+        images[0].save(
+            gif_path,
+            save_all=True,
+            append_images=images[1:],
+            duration=150,
+            loop=0
+        )
+        print(f"GIF saved as {gif_path}")
